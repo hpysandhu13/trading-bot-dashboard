@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
-          printf '%s' "${{ secrets.DROPLET_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
+          printf '%s' "${{ secrets.DROPLET_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
           ssh-keyscan -p 22 "${{ secrets.DROPLET_HOST }}" >> ~/.ssh/known_hosts

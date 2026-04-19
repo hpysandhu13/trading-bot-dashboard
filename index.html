@@ -328,6 +328,12 @@
       <div class="perf-row"><span class="perf-lbl">Win Rate</span><span class="perf-val" id="pf-wr">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Wins</span><span class="perf-val win" id="pf-w">0</span></div>
       <div class="perf-row"><span class="perf-lbl">Losses</span><span class="perf-val loss" id="pf-l">0</span></div>
+      <div class="perf-row"><span class="perf-lbl">Expectancy / Trade</span><span class="perf-val" id="pf-exp">&#x2014;</span></div>
+      <div class="perf-row"><span class="perf-lbl">Avg Win</span><span class="perf-val win" id="pf-aw">&#x2014;</span></div>
+      <div class="perf-row"><span class="perf-lbl">Avg Loss</span><span class="perf-val loss" id="pf-al">&#x2014;</span></div>
+      <div class="perf-row"><span class="perf-lbl">Payoff Ratio</span><span class="perf-val" id="pf-pr">&#x2014;</span></div>
+      <div class="perf-row"><span class="perf-lbl">Profit Factor</span><span class="perf-val" id="pf-pf">&#x2014;</span></div>
+      <div class="perf-row"><span class="perf-lbl">Fee Load</span><span class="perf-val fee" id="pf-fl">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Pending</span><span class="perf-val" id="pf-p">0</span></div>
       <div class="perf-row"><span class="perf-lbl">Fees / Charges</span><span class="perf-val fee" id="pf-f">$0.00</span></div>
       <div class="perf-row"><span class="perf-lbl">Balance</span><span class="perf-val" id="pf-b">$100.00</span></div>
@@ -3289,6 +3295,9 @@ function refreshActiveSignalCard() {
 function renderPerformance() {
   var trades  = loadTradeJournal();
   var closed  = trades.filter(function(t){return t.status === 'closed';});
+  var closedPnls = closed.map(function (t) { return Number(t.pnl || 0); }).filter(function (x) { return isFinite(x); });
+  var winPnls = closedPnls.filter(function (x) { return x > 0; });
+  var lossPnlsAbs = closedPnls.filter(function (x) { return x < 0; }).map(function (x) { return Math.abs(x); });
   var wins    = closed.filter(function(t){return t.outcome === 'win';}).length;
   var losses  = closed.filter(function(t){return t.outcome === 'loss';}).length;
   var pending = trades.filter(function(t){return t.status === 'open';}).length;
@@ -3297,11 +3306,50 @@ function renderPerformance() {
   var balance = loadBalanceState();
   var netPnl  = balance.balance - balance.initial;
   var fees    = closed.reduce(function(sum, trade) { return sum + Number(trade.fees || 0); }, 0);
+  var grossProfit = winPnls.reduce(function (s, x) { return s + x; }, 0);
+  var grossLossAbs = lossPnlsAbs.reduce(function (s, x) { return s + x; }, 0);
+  var totalAbsPnl = closedPnls.reduce(function (s, x) { return s + Math.abs(x); }, 0);
+  var expectancy = closedPnls.length ? (closedPnls.reduce(function (s, x) { return s + x; }, 0) / closedPnls.length) : null;
+  var avgWin = winPnls.length ? (grossProfit / winPnls.length) : null;
+  var avgLossAbs = lossPnlsAbs.length ? (grossLossAbs / lossPnlsAbs.length) : null;
+  var payoffRatio = (avgWin !== null && avgLossAbs !== null && avgLossAbs > 0) ? (avgWin / avgLossAbs) : null;
+  var profitFactor = grossLossAbs > 0 ? (grossProfit / grossLossAbs) : (grossProfit > 0 ? Infinity : null);
+  var feeLoad = totalAbsPnl > 0 ? (fees / totalAbsPnl) : null;
   var dd      = (balance.maxDrawdown || 0) * 100;
+
+  function fmtMoney(value) {
+    if (!isFinite(value)) return '\u2014';
+    return (value >= 0 ? '+' : '-') + '$' + Math.abs(value).toFixed(2);
+  }
+
   document.getElementById('pf-wr').textContent = wr !== null ? wr + '%' : '\u2014';
   document.getElementById('pf-wr').style.color = wr !== null ? (wr >= 55 ? '#26a69a' : '#ef5350') : '#fff';
   document.getElementById('pf-w').textContent  = wins;
   document.getElementById('pf-l').textContent  = losses;
+  var expEl = document.getElementById('pf-exp');
+  if (expEl) {
+    expEl.textContent = expectancy !== null ? fmtMoney(expectancy) : '\u2014';
+    expEl.style.color = expectancy !== null ? (expectancy >= 0 ? '#26a69a' : '#ef5350') : '#fff';
+  }
+  var avgWinEl = document.getElementById('pf-aw');
+  if (avgWinEl) avgWinEl.textContent = avgWin !== null ? ('$' + avgWin.toFixed(2)) : '\u2014';
+  var avgLossEl = document.getElementById('pf-al');
+  if (avgLossEl) avgLossEl.textContent = avgLossAbs !== null ? ('-$' + avgLossAbs.toFixed(2)) : '\u2014';
+  var payoffEl = document.getElementById('pf-pr');
+  if (payoffEl) {
+    payoffEl.textContent = payoffRatio !== null ? payoffRatio.toFixed(2) : '\u2014';
+    payoffEl.style.color = payoffRatio !== null ? (payoffRatio >= 1 ? '#26a69a' : '#ef5350') : '#fff';
+  }
+  var pfEl = document.getElementById('pf-pf');
+  if (pfEl) {
+    pfEl.textContent = profitFactor === Infinity ? '∞' : (profitFactor !== null ? profitFactor.toFixed(2) : '\u2014');
+    pfEl.style.color = profitFactor !== null ? (profitFactor >= 1.2 ? '#26a69a' : '#ef5350') : '#fff';
+  }
+  var feeLoadEl = document.getElementById('pf-fl');
+  if (feeLoadEl) {
+    feeLoadEl.textContent = feeLoad !== null ? ((feeLoad * 100).toFixed(1) + '%') : '\u2014';
+    feeLoadEl.style.color = feeLoad !== null ? (feeLoad <= 20 / 100 ? '#26a69a' : '#ef5350') : '#fff';
+  }
   document.getElementById('pf-p').textContent  = pending;
   var feeEl = document.getElementById('pf-f');
   if (feeEl) feeEl.textContent = '$' + fees.toFixed(2);

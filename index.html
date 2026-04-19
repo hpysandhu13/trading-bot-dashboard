@@ -430,6 +430,16 @@ var lastTickTs = 0;
 var lastSignalRunTs = 0;
 var lastNewsRefreshTs = 0;
 var duplicateSkipStats = { total: 0, bySymbol: {}, lastTs: 0 };
+var adaptiveSignalTuning = {
+  mode: 'neutral',
+  sampleSize: 0,
+  confidenceAdjust: 0,
+  gapAdjustPct: 0,
+  breakoutBufferAdjustPct: 0,
+  volumeConfirmAdjust: 0,
+  maxSignalSpreadAdjustBps: 0,
+  updatedTs: 0,
+};
 var SIGNAL_BOT_MAX_NEW_PER_RUN = 3;
 var chartType = 'candle'; // 'line' or 'candle'
 
@@ -3536,10 +3546,83 @@ function getRecentDirectionPenalty(symbol, dir) {
   return 0;
 }
 
+function computeAdaptiveSignalTuning() {
+  var defaults = {
+    mode: 'neutral',
+    sampleSize: 0,
+    confidenceAdjust: 0,
+    gapAdjustPct: 0,
+    breakoutBufferAdjustPct: 0,
+    volumeConfirmAdjust: 0,
+    maxSignalSpreadAdjustBps: 0,
+    updatedTs: Date.now(),
+  };
+
+  var closed = loadTradeJournal().filter(function (t) {
+    return t && t.status === 'closed' && isFinite(Number(t.pnl));
+  }).sort(function (a, b) {
+    return Number(b.closedTs || b.openedTs || 0) - Number(a.closedTs || a.openedTs || 0);
+  });
+
+  if (closed.length < 12) {
+    defaults.mode = 'insufficient_data';
+    defaults.sampleSize = closed.length;
+    return defaults;
+  }
+
+  var sample = closed.slice(0, 30);
+  var wins = sample.filter(function (t) { return Number(t.pnl || 0) > 0; }).length;
+  var winRate = sample.length ? (wins / sample.length) : 0;
+  var expectancy = sample.length
+    ? (sample.reduce(function (s, t) { return s + Number(t.pnl || 0); }, 0) / sample.length)
+    : 0;
+  var feeSum = sample.reduce(function (s, t) { return s + Math.max(0, Number(t.fees || 0)); }, 0);
+  var grossAbs = sample.reduce(function (s, t) { return s + Math.abs(Number(t.grossPnl || 0)); }, 0);
+  var feeLoad = grossAbs > 0 ? (feeSum / grossAbs) : 0;
+  var drawdownPct = Number((loadBalanceState().maxDrawdown || 0) * 100);
+
+  var tighten = 0;
+  if (winRate < 0.46) tighten += 1;
+  if (expectancy <= 0) tighten += 1;
+  if (feeLoad > 0.35) tighten += 1;
+  if (drawdownPct >= 6) tighten += 1;
+
+  var relax = 0;
+  if (winRate > 0.58 && expectancy > 0 && drawdownPct < 4) relax = 1;
+
+  var tuning = Object.assign({}, defaults, {
+    sampleSize: sample.length,
+  });
+
+  if (tighten > 0) {
+    tuning.mode = 'tighten';
+    tuning.confidenceAdjust = tighten * 2;
+    tuning.gapAdjustPct = tighten * 0.00008;
+    tuning.breakoutBufferAdjustPct = tighten * 0.00005;
+    tuning.volumeConfirmAdjust = tighten * 0.02;
+    tuning.maxSignalSpreadAdjustBps = -tighten * 1.2;
+    return tuning;
+  }
+
+  if (relax > 0) {
+    tuning.mode = 'relax';
+    tuning.confidenceAdjust = -1 * relax;
+    tuning.gapAdjustPct = -0.00004 * relax;
+    tuning.breakoutBufferAdjustPct = -0.00003 * relax;
+    tuning.volumeConfirmAdjust = -0.01 * relax;
+    tuning.maxSignalSpreadAdjustBps = 0.8 * relax;
+    return tuning;
+  }
+
+  tuning.mode = 'neutral';
+  return tuning;
+}
+
 function getSignalQualityProfile(profile) {
   var p = normalizeSignalProfile(profile);
+  var base;
   if (p === 'conservative') {
-    return {
+    base = {
       breakoutLookback: 16,
       confirmBars: 2,
       volumeConfirmMult: 1.12,
@@ -3552,9 +3635,8 @@ function getSignalQualityProfile(profile) {
       rsiOverbought: 70,
       rsiOversold: 30,
     };
-  }
-  if (p === 'aggressive') {
-    return {
+  } else if (p === 'aggressive') {
+    base = {
       breakoutLookback: 12,
       confirmBars: 1,
       volumeConfirmMult: 1.02,
@@ -3567,20 +3649,36 @@ function getSignalQualityProfile(profile) {
       rsiOverbought: 74,
       rsiOversold: 26,
     };
+  } else {
+    base = {
+      breakoutLookback: 14,
+      confirmBars: 2,
+      volumeConfirmMult: 1.06,
+      minGapPct: 0.00065,
+      breakoutBufferPct: 0.00045,
+      minStopPct: 0.0014,
+      minConfidence: 62,
+      maxBreakoutMagPct: 0.016,
+      maxSignalSpreadBps: 16,
+      rsiOverbought: 72,
+      rsiOversold: 28,
+    };
   }
-  return {
-    breakoutLookback: 14,
-    confirmBars: 2,
-    volumeConfirmMult: 1.06,
-    minGapPct: 0.00065,
-    breakoutBufferPct: 0.00045,
-    minStopPct: 0.0014,
-    minConfidence: 62,
-    maxBreakoutMagPct: 0.016,
-    maxSignalSpreadBps: 16,
-    rsiOverbought: 72,
-    rsiOversold: 28,
-  };
+
+  var tuning = adaptiveSignalTuning || {};
+  var confAdj = isFinite(Number(tuning.confidenceAdjust)) ? Number(tuning.confidenceAdjust) : 0;
+  var gapAdj = isFinite(Number(tuning.gapAdjustPct)) ? Number(tuning.gapAdjustPct) : 0;
+  var breakAdj = isFinite(Number(tuning.breakoutBufferAdjustPct)) ? Number(tuning.breakoutBufferAdjustPct) : 0;
+  var volAdj = isFinite(Number(tuning.volumeConfirmAdjust)) ? Number(tuning.volumeConfirmAdjust) : 0;
+  var spreadAdj = isFinite(Number(tuning.maxSignalSpreadAdjustBps)) ? Number(tuning.maxSignalSpreadAdjustBps) : 0;
+
+  base.minConfidence = clamp(base.minConfidence + confAdj, 56, 78);
+  base.minGapPct = clamp(base.minGapPct + gapAdj, 0.00035, 0.0014);
+  base.breakoutBufferPct = clamp(base.breakoutBufferPct + breakAdj, 0.0002, 0.001);
+  base.volumeConfirmMult = clamp(base.volumeConfirmMult + volAdj, 1.0, 1.2);
+  base.maxSignalSpreadBps = clamp(base.maxSignalSpreadBps + spreadAdj, 10, 24);
+
+  return base;
 }
 
 function hasBreakoutConfirmation(closes, dir, triggerLevel, confirmBars) {
@@ -3783,6 +3881,14 @@ function scanAllPairsForSignals(recentHeadlines) {
 function runSignalBot() {
   if (signalBotBusy) return Promise.resolve();
   signalBotBusy = true;
+  adaptiveSignalTuning = computeAdaptiveSignalTuning();
+  rateLimitedLog('info', 'adaptive_signal_tuning_state', 60000,
+    'Adaptive tuning:', adaptiveSignalTuning.mode,
+    'sample=' + adaptiveSignalTuning.sampleSize,
+    'confAdj=' + adaptiveSignalTuning.confidenceAdjust,
+    'gapAdj=' + adaptiveSignalTuning.gapAdjustPct.toFixed(5),
+    'spreadAdj=' + adaptiveSignalTuning.maxSignalSpreadAdjustBps.toFixed(2)
+  );
   lastSignalRunTs = Date.now();
   renderBotHealth();
   var newsPromise = arguments.length && arguments[0] ? Promise.resolve(arguments[0]) : loadNews();

@@ -22,6 +22,8 @@ jobs:
           key: ${{ secrets.DROPLET_SSH_KEY }}
           passphrase: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
           script_stop: true
+          port: 22
+          proxy_skip: true
           script: |
             set -e
             cd /var/www/trading-bot-dashboard

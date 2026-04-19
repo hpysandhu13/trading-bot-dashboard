@@ -2294,6 +2294,7 @@ var TRADE_FEE_RATE = 0.001;
 var TRADE_FEE_CAP = 2;
 var PAPER_TRADE_HOLD_MIN = 20;
 var MAX_NOTIONAL_MULTIPLIER = 1.1;
+var MAX_FEE_TO_TARGET_RATIO = 0.35;
 var MIN_STOP_DISTANCE_PCT = 0.001;  // Tighter stops for volatile market
 var REGIME_TREND_GAP_PCT = 0.0012;
 var REGIME_SIDEWAYS_GAP_PCT = 0.0006;
@@ -2487,7 +2488,7 @@ function buildTradeRiskMetrics(dir, entryPrice, stopPrice, takeProfit, balanceAm
   if (!isFinite(stopDistancePct) || stopDistancePct < MIN_STOP_DISTANCE_PCT) return { valid: false, reason: 'stop_too_close' };
   if (!isFinite(rr.rr) || rr.rr < 2) return { valid: false, reason: 'rr_below_min' };
   if (!isFinite(expectedProfit) || expectedProfit <= 0) return { valid: false, reason: 'invalid_expected_profit' };
-  if (fee > (expectedProfit * 0.10)) return { valid: false, reason: 'fee_too_high' };
+  if (fee > (expectedProfit * MAX_FEE_TO_TARGET_RATIO)) return { valid: false, reason: 'fee_too_high' };
 
   return {
     valid: true,
@@ -3871,6 +3872,16 @@ function scanAllPairsForSignals(recentHeadlines) {
       rateLimitedLog('error', 'signal_generation_failed_' + coin.sym, 20000, 'Signal generation failed for ' + coin.sym, e);
     }
   });
+  if (!allSignals.length) {
+    CX.forEach(function (coin) {
+      try {
+        var fb = buildFallbackMomentumSignal(coin.sym);
+        if (fb) allSignals.push(fb);
+      } catch (e) {
+        rateLimitedLog('error', 'fallback_signal_generation_failed_' + coin.sym, 20000, 'Fallback signal generation failed for ' + coin.sym, e);
+      }
+    });
+  }
   if (!allSignals.length) return [];
   allSignals.sort(function (a, b) {
     return (b.confidence || 0) - (a.confidence || 0);

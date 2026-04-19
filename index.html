@@ -328,6 +328,7 @@
       <div class="perf-row"><span class="perf-lbl">Win Rate</span><span class="perf-val" id="pf-wr">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Wins</span><span class="perf-val win" id="pf-w">0</span></div>
       <div class="perf-row"><span class="perf-lbl">Losses</span><span class="perf-val loss" id="pf-l">0</span></div>
+      <div class="perf-row"><span class="perf-lbl">Bot Quality Score</span><span class="perf-val" id="pf-q">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Expectancy / Trade</span><span class="perf-val" id="pf-exp">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Avg Win</span><span class="perf-val win" id="pf-aw">&#x2014;</span></div>
       <div class="perf-row"><span class="perf-lbl">Avg Loss</span><span class="perf-val loss" id="pf-al">&#x2014;</span></div>
@@ -3317,6 +3318,39 @@ function renderPerformance() {
   var feeLoad = totalAbsPnl > 0 ? (fees / totalAbsPnl) : null;
   var dd      = (balance.maxDrawdown || 0) * 100;
 
+  function scoreFromWinRate(value) {
+    if (!isFinite(value)) return 50;
+    return clamp(value, 0, 100);
+  }
+
+  function scoreFromExpectancy(value) {
+    if (!isFinite(value)) return 50;
+    var base = Math.max(START_BALANCE, Number(balance.initial || START_BALANCE));
+    return clamp(50 + ((value / base) * 1000), 0, 100);
+  }
+
+  function scoreFromProfitFactor(value) {
+    if (value === Infinity) return 100;
+    if (!isFinite(value)) return 50;
+    return clamp((value / 3) * 100, 0, 100);
+  }
+
+  function scoreFromFeeLoad(value) {
+    if (!isFinite(value)) return 50;
+    return clamp(100 - (value * 250), 0, 100);
+  }
+
+  var qualityScore = null;
+  if (wr !== null || expectancy !== null || profitFactor !== null || feeLoad !== null) {
+    var scorePieces = [
+      scoreFromWinRate(wr !== null ? wr : 50),
+      scoreFromExpectancy(expectancy),
+      scoreFromProfitFactor(profitFactor),
+      scoreFromFeeLoad(feeLoad)
+    ];
+    qualityScore = Math.round(scorePieces.reduce(function (s, x) { return s + x; }, 0) / scorePieces.length);
+  }
+
   function fmtMoney(value) {
     if (!isFinite(value)) return '\u2014';
     return (value >= 0 ? '+' : '-') + '$' + Math.abs(value).toFixed(2);
@@ -3326,6 +3360,11 @@ function renderPerformance() {
   document.getElementById('pf-wr').style.color = wr !== null ? (wr >= 55 ? '#26a69a' : '#ef5350') : '#fff';
   document.getElementById('pf-w').textContent  = wins;
   document.getElementById('pf-l').textContent  = losses;
+  var qualityEl = document.getElementById('pf-q');
+  if (qualityEl) {
+    qualityEl.textContent = qualityScore !== null ? qualityScore + '/100' : '\u2014';
+    qualityEl.style.color = qualityScore !== null ? (qualityScore >= 70 ? '#26a69a' : qualityScore >= 45 ? '#f0b90b' : '#ef5350') : '#fff';
+  }
   var expEl = document.getElementById('pf-exp');
   if (expEl) {
     expEl.textContent = expectancy !== null ? fmtMoney(expectancy) : '\u2014';

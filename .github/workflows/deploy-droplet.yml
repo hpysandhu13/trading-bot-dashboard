@@ -19,16 +19,19 @@ jobs:
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
-          printf '%s' "${{ secrets.DROPLET_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
+          printf '%s' "${{ secrets.DROPLET_SSH_KEY_B64 }}" | tr -d '\r\n' | base64 -d | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
-          ssh-keyscan -p 22 "${{ secrets.DROPLET_HOST }}" >> ~/.ssh/known_hosts
+          host="$(printf '%s' "${{ secrets.DROPLET_HOST }}" | tr -d '\r\n')"
+          ssh-keyscan -p 22 "$host" >> ~/.ssh/known_hosts
 
       - name: Deploy over SSH
         shell: bash
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p 22 "${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}" '
+          host="$(printf '%s' "${{ secrets.DROPLET_HOST }}" | tr -d '\r\n')"
+          user="$(printf '%s' "${{ secrets.DROPLET_USER }}" | tr -d '\r\n')"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p 22 "$user@$host" '
             set -e
             cd /var/www/trading-bot-dashboard
             git pull --ff-only origin main

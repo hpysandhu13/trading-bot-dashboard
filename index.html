@@ -3541,6 +3541,8 @@ function getSignalQualityProfile(profile) {
   if (p === 'conservative') {
     return {
       breakoutLookback: 16,
+      confirmBars: 2,
+      volumeConfirmMult: 1.12,
       minGapPct: 0.0009,
       breakoutBufferPct: 0.0006,
       minStopPct: 0.0016,
@@ -3554,6 +3556,8 @@ function getSignalQualityProfile(profile) {
   if (p === 'aggressive') {
     return {
       breakoutLookback: 12,
+      confirmBars: 1,
+      volumeConfirmMult: 1.02,
       minGapPct: 0.00045,
       breakoutBufferPct: 0.0003,
       minStopPct: 0.0012,
@@ -3566,6 +3570,8 @@ function getSignalQualityProfile(profile) {
   }
   return {
     breakoutLookback: 14,
+    confirmBars: 2,
+    volumeConfirmMult: 1.06,
     minGapPct: 0.00065,
     breakoutBufferPct: 0.00045,
     minStopPct: 0.0014,
@@ -3575,6 +3581,19 @@ function getSignalQualityProfile(profile) {
     rsiOverbought: 72,
     rsiOversold: 28,
   };
+}
+
+function hasBreakoutConfirmation(closes, dir, triggerLevel, confirmBars) {
+  if (!Array.isArray(closes) || closes.length < 3) return false;
+  var bars = Math.max(1, Number(confirmBars) || 1);
+  if (closes.length <= bars) return false;
+  for (var i = closes.length - bars; i < closes.length; i++) {
+    var c = Number(closes[i]);
+    if (!isFinite(c)) return false;
+    if (dir === 'BUY' && c <= triggerLevel) return false;
+    if (dir === 'SELL' && c >= triggerLevel) return false;
+  }
+  return true;
 }
 
 function buildCryptoSignalForSymbol(symbol, recentHeadlines) {
@@ -3592,7 +3611,8 @@ function buildCryptoSignalForSymbol(symbol, recentHeadlines) {
   var entry = Number(tick.last);
   var ema9 = calculateEmaAt(closes, 9, lastIdx);
   var ema21 = calculateEmaAt(closes, 21, lastIdx);
-  if (!isFinite(ema9) || !isFinite(ema21) || !isFinite(entry) || entry <= 0) return null;
+  var ema50 = calculateEmaAt(closes, 50, lastIdx);
+  if (!isFinite(ema9) || !isFinite(ema21) || !isFinite(ema50) || !isFinite(entry) || entry <= 0) return null;
 
   var gapPct = Math.abs(ema9 - ema21) / Math.max(Math.abs(entry), 1e-9);
   if (gapPct < Math.max(EMA_SIDEWAYS_GAP_PCT, qualityProfile.minGapPct)) return null;
@@ -3615,6 +3635,21 @@ function buildCryptoSignalForSymbol(symbol, recentHeadlines) {
   if (uptrend && brokeUp) dir = 'BUY';
   if (downtrend && brokeDown) dir = 'SELL';
   if (!dir) return null;
+
+  var htfAligned = dir === 'BUY' ? (entry > ema50) : (entry < ema50);
+  if (!htfAligned) return null;
+
+  var triggerLevel = dir === 'BUY'
+    ? (prevHigh * (1 + qualityProfile.breakoutBufferPct))
+    : (prevLow * (1 - qualityProfile.breakoutBufferPct));
+  if (!hasBreakoutConfirmation(closes, dir, triggerLevel, qualityProfile.confirmBars)) return null;
+
+  var volHist = (featState.volumeHistory || []).slice();
+  var latestVol = volHist.length ? Number(volHist[volHist.length - 1]) : NaN;
+  var baseVol = volHist.length > 10 ? mean(volHist.slice(-31, -1)) : NaN;
+  if (isFinite(latestVol) && isFinite(baseVol) && baseVol > 0) {
+    if (latestVol < (baseVol * qualityProfile.volumeConfirmMult)) return null;
+  }
 
   var rsiSeries = calculateRSI(closes, RSI_PERIOD);
   var rsi = rsiSeries.length ? Number(rsiSeries[rsiSeries.length - 1]) : NaN;
@@ -3642,12 +3677,16 @@ function buildCryptoSignalForSymbol(symbol, recentHeadlines) {
 
   var spreadPenalty = isFinite(spreadBps) ? Math.min(8, Math.max(0, spreadBps - 4)) : 0;
   var rsiPenalty = isFinite(rsi) ? Math.min(10, Math.abs(50 - rsi) * 0.15) : 0;
-  var conf = Math.max(55, Math.min(92, Math.round(58 + (gapPct * 12000) + (breakoutMagPct * 7000) - spreadPenalty - rsiPenalty)));
+  var volumeBoost = (isFinite(latestVol) && isFinite(baseVol) && baseVol > 0)
+    ? Math.min(8, Math.max(0, ((latestVol / baseVol) - 1) * 12))
+    : 0;
+  var htfBoost = htfAligned ? 4 : 0;
+  var conf = Math.max(55, Math.min(92, Math.round(58 + (gapPct * 12000) + (breakoutMagPct * 7000) + volumeBoost + htfBoost - spreadPenalty - rsiPenalty)));
   conf = Math.max(0, conf - getRecentDirectionPenalty(symbol, dir));
   if (conf < qualityProfile.minConfidence) return null;
 
   var holdMinutes = signalProfile === 'conservative' ? 30 : signalProfile === 'aggressive' ? 14 : 20;
-  var classifierHeadline = symbol + ' trend breakout: EMA9 ' + (dir === 'BUY' ? '>' : '<') + ' EMA21 with 20-bar break';
+  var classifierHeadline = symbol + ' trend breakout: EMA9 ' + (dir === 'BUY' ? '>' : '<') + ' EMA21 with ' + qualityProfile.breakoutLookback + '-bar confirmed break';
 
   return {
     id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
